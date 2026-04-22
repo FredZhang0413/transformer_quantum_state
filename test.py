@@ -18,10 +18,94 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import plt_config
 
-torch.set_default_tensor_type(torch.cuda.FloatTensor
-                                if torch.cuda.is_available()
-                                else torch.FloatTensor)
+torch.set_default_dtype(torch.float32)
+torch.set_default_device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def summarize_ensemble(values):
+    values = np.asarray(values)
+    return {
+        'q10': np.quantile(values, 0.1, axis=1),
+        'median': np.quantile(values, 0.5, axis=1),
+        'q90': np.quantile(values, 0.9, axis=1),
+        'mean': values.mean(axis=1),
+        'std': values.std(axis=1),
+    }
+
+
+def save_test_visualizations(folder, save_str, h, E_samples, m_samples, dEs, E_dmrgs):
+    color = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    E_stats = summarize_ensemble(E_samples)
+    m_stats = summarize_ensemble(m_samples)
+    dE_stats = summarize_ensemble(dEs)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+
+    axes[0, 0].plot(h, E_dmrgs / n, color=color[2], ls='--', label='DMRG')
+    axes[0, 0].plot(h, E_stats['median'], color=color[0], label='TQS median')
+    axes[0, 0].fill_between(h, E_stats['q10'], E_stats['q90'], color=color[0], alpha=0.2, label='10-90%')
+    axes[0, 0].set_xlabel('$h$')
+    axes[0, 0].set_ylabel('Energy Per Site')
+    axes[0, 0].set_title('Energy vs Field')
+    axes[0, 0].legend()
+
+    axes[0, 1].plot(h, dE_stats['median'], color=color[1], label='Relative Error')
+    axes[0, 1].fill_between(h, dE_stats['q10'], dE_stats['q90'], color=color[1], alpha=0.2)
+    axes[0, 1].set_xlabel('$h$')
+    axes[0, 1].set_ylabel('Relative Energy Error')
+    axes[0, 1].set_yscale('log')
+    axes[0, 1].set_title('Energy Error vs Field')
+    axes[0, 1].legend()
+
+    axes[1, 0].plot(h, m_stats['median'], color=color[3], label=r'$|m_z|$ median')
+    axes[1, 0].fill_between(h, m_stats['q10'], m_stats['q90'], color=color[3], alpha=0.2)
+    axes[1, 0].set_xlabel('$h$')
+    axes[1, 0].set_ylabel(r'$|\langle \sigma^z \rangle|$')
+    axes[1, 0].set_title('Magnetization vs Field')
+    axes[1, 0].legend()
+
+    axes[1, 1].hist(dEs.reshape(-1), bins=30, color=color[1], alpha=0.8)
+    axes[1, 1].set_xlabel('Relative Energy Error')
+    axes[1, 1].set_ylabel('Count')
+    axes[1, 1].set_title('Error Distribution Over All Test Runs')
+
+    plt.tight_layout()
+    plt.savefig(f'{folder}test_summary_{save_str}.png', bbox_inches='tight', dpi=200)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+    for ensemble_id in range(E_samples.shape[1]):
+        ax.plot(h, E_samples[:, ensemble_id], color=color[0], alpha=0.15)
+    ax.plot(h, E_dmrgs / n, color=color[2], ls='--', lw=2, label='DMRG')
+    ax.plot(h, E_stats['median'], color=color[1], lw=2, label='TQS median')
+    ax.set_xlabel('$h$')
+    ax.set_ylabel('Energy Per Site')
+    ax.set_title('Per-Ensemble Energy Traces')
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(f'{folder}test_energy_ensembles_{save_str}.png', bbox_inches='tight', dpi=200)
+    plt.close(fig)
+
+    summary_table = np.column_stack([
+        h,
+        E_stats['median'],
+        E_dmrgs / n,
+        dE_stats['median'],
+        m_stats['median'],
+        E_stats['std'],
+        dE_stats['std'],
+        m_stats['std'],
+    ])
+    np.savetxt(
+        f'{folder}test_summary_{save_str}.csv',
+        summary_table,
+        delimiter=',',
+        header='h,E_tqs_median,E_dmrg,E_relerr_median,mz_median,E_std,dE_std,mz_std',
+        comments='',
+    )
 
 try:
     os.mkdir('results/')
@@ -32,7 +116,7 @@ system_sizes = torch.tensor([[40]], dtype=torch.int64, device='cpu')
 H = Ising(system_sizes[0], periodic=False)
 # H = XYZ(system_size[0], periodic=False)
 
-n = H.n
+n = int(H.n)
 param_dim = H.param_dim
 embedding_size = 32
 n_head = 8
@@ -40,20 +124,21 @@ n_hid = embedding_size
 n_layers = 8
 dropout = 0
 minibatch = 10000
-batch = 1000000
+batch = 10000
 max_unique = 1000
 ensemble_size = 10
-model = TransformerModel(system_sizes, param_dim, embedding_size, n_head, n_hid, n_layers,
-                         dropout=dropout, minibatch=minibatch)
-num_params = sum([param.numel() for param in model.parameters()])
-print('Number of parameters: ', num_params)
-
 name = type(H).__name__
 
 folder = 'results/'
 save_str = f'{name}_{embedding_size}_{n_head}_{n_layers}'
-
-model.load_state_dict(torch.load(f'{folder}ckpt_100000_{save_str}_0.ckpt'))
+checkpoint_path = f'{folder}ckpt_100000_{save_str}_0.ckpt'
+checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+use_custom_attention = any('self_attn.linear_Q' in key for key in checkpoint)
+model = TransformerModel(system_sizes, param_dim, embedding_size, n_head, n_hid, n_layers,
+                         dropout=dropout, minibatch=minibatch, custom_attention=use_custom_attention)
+num_params = sum([param.numel() for param in model.parameters()])
+print('Number of parameters: ', num_params)
+model.load_state_dict(checkpoint)
 
 optim = Optimizer(model, [H])
 
@@ -111,4 +196,9 @@ with open(f'results/m_sample_{save_str}.npy', 'wb') as f:
     np.save(f, m_samples)
 with open(f'results/dE_{save_str}.npy', 'wb') as f:
     np.save(f, dEs)
+
+save_test_visualizations(folder, save_str, h, E_samples, m_samples, dEs, E_dmrgs)
+print(f'Saved test summary plot to {folder}test_summary_{save_str}.png')
+print(f'Saved test ensemble plot to {folder}test_energy_ensembles_{save_str}.png')
+print(f'Saved test summary table to {folder}test_summary_{save_str}.csv')
 
