@@ -13,10 +13,8 @@ import os
 import numpy as np
 import torch
 
-torch.set_default_tensor_type(torch.cuda.FloatTensor
-                                    if torch.cuda.is_available()
-                                    else torch.FloatTensor)
-# torch.set_default_tensor_type(torch.FloatTensor)
+torch.set_default_dtype(torch.float32)
+torch.set_default_device('cuda' if torch.cuda.is_available() else 'cpu')
 try:
     os.mkdir('results/')
 except FileExistsError:
@@ -32,7 +30,7 @@ n_head = 8
 n_hid = embedding_size
 n_layers = 8
 dropout = 0
-minibatch = 10000
+minibatch = 5000
 
 model = TransformerModel(system_sizes, param_dim, embedding_size, n_head, n_hid, n_layers, dropout=dropout,
                          minibatch=minibatch)
@@ -53,5 +51,7 @@ point_of_interest = None
 use_SR = False
 
 optim = Optimizer(model, Hamiltonians, point_of_interest=point_of_interest)
-optim.train(10000, batch=1000000, max_unique=100, param_range=param_range,
-            fine_tuning=False, use_SR=use_SR, ensemble_id=int(use_SR), print_freq=20)
+train_result = optim.train(5000, batch=1000000, max_unique=100, param_range=param_range,
+                           fine_tuning=False, use_SR=use_SR, ensemble_id=int(use_SR), print_freq=20)
+print(f"Saved convergence curves to results/convergence_{train_result['save_str']}.png")
+print(f"Saved convergence summary to results/convergence_summary_{train_result['save_str']}.png")
