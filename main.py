@@ -53,5 +53,5 @@ point_of_interest = None
 use_SR = False
 
 optim = Optimizer(model, Hamiltonians, point_of_interest=point_of_interest)
-optim.train(100000, batch=1000000, max_unique=100, param_range=param_range,
-            fine_tuning=False, use_SR=use_SR, ensemble_id=int(use_SR))
+optim.train(10000, batch=1000000, max_unique=100, param_range=param_range,
+            fine_tuning=False, use_SR=use_SR, ensemble_id=int(use_SR), print_freq=20)
